@@ -56,15 +56,21 @@ struct HaloPanelView: View {
 
             Divider()
 
-            HStack {
-                Button("Full") { state.intensity = 100 }
-                Button("Half") { state.intensity = 50 }
-                Button("Off")  { state.intensity = 0 }
-                Spacer()
-                Button("3200K") { state.cct = 3200 }
-                Button("5600K") { state.cct = 5600 }
+            // Presets — wrap to the panel width; the active value is highlighted.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Intensity").font(.caption).foregroundStyle(.secondary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 50), spacing: 4)], alignment: .leading, spacing: 4) {
+                    ForEach(Self.intensityPresets, id: \.value) { p in
+                        PresetButton(label: p.label, isActive: state.intensity == p.value) { state.intensity = p.value }
+                    }
+                }
+                Text("CCT").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 4)], alignment: .leading, spacing: 4) {
+                    ForEach(Self.cctPresets, id: \.self) { k in
+                        PresetButton(label: "\(k)K", isActive: state.cct == Double(k)) { state.cct = Double(k) }
+                    }
+                }
             }
-            .buttonStyle(.bordered)
 
             let bytes = state.encode(profile: profile)
             Text("DMX out: " + bytes.enumerated().map { "ch\(startAddress + $0.offset)=\($0.element)" }.joined(separator: "  "))
@@ -81,6 +87,38 @@ struct HaloPanelView: View {
 
     private func push() {
         dmx.set(startingAt: startAddress, values: state.encode(profile: profile))
+    }
+
+    /// Off, 10 % … Full in 10 % steps; 50 % is labelled "Half".
+    static let intensityPresets: [(label: String, value: Double)] = (0...10).map { i in
+        let v = Double(i * 10)
+        switch i {
+        case 0: return ("Off", v)
+        case 5: return ("Half", v)
+        case 10: return ("Full", v)
+        default: return ("\(i * 10)%", v)
+        }
+    }
+
+    /// Kelvin presets across the Halo's 2700–6500 K range (includes tungsten 3200 K and daylight 5600 K).
+    static let cctPresets: [Int] = [2700, 3000, 3200, 3600, 4000, 4500, 5000, 5600, 6000, 6500]
+}
+
+/// Bordered button that turns prominent when its value is the current one.
+struct PresetButton: View {
+    let label: String
+    let isActive: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Group {
+            if isActive {
+                Button(action: action) { Text(label).frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
+            } else {
+                Button(action: action) { Text(label).frame(maxWidth: .infinity) }.buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.small)
     }
 }
 
