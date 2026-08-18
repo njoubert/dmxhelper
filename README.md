@@ -1,4 +1,4 @@
-# dmx — toy DMX controller for macOS
+# dmxhelper — toy DMX controller for macOS
 
 A small native Swift/SwiftUI app (plus a CLI) that drives DMX lights through an
 **Enttec DMX USB Pro**. Built to poke at an **amaran Halo 300x** on channel 1.
