@@ -10,6 +10,8 @@ import DMXCore
 //   dmxcli halo   [--port PATH] [--hold SEC] [--addr N] [--profile 1|2] INTENSITY% CCT_K [strobe off|random|constant]
 //                                                 e.g. dmxcli halo 50 3200
 //   dmxcli black  [--port PATH]                  send all zeros
+//   dmxcli icon   [--iconset DIR] [--png PATH --size N]
+//                                                 render the app icon (no hardware needed)
 //   dmxcli bench  [--port PATH] [--channels N] [--seconds S] [--fps F]
 //                                                 send N-channel frames for S seconds; --fps 0 (default) floods with
 //                                                 blocking writes (measures intake), --fps F paces at F frames/s and
@@ -25,7 +27,7 @@ func die(_ msg: String) -> Never { FileHandle.standardError.write((msg + "\n").d
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let cmd = args.first else {
-    print("usage: dmxcli list|info|set|halo|black [--port PATH] [--hold SEC] ...")
+    print("usage: dmxcli list|info|set|halo|black|icon [--port PATH] [--hold SEC] ...")
     exit(2)
 }
 args.removeFirst()
@@ -111,6 +113,19 @@ case "halo":
 
 case "black":
     stream([UInt8](repeating: 0, count: 512), seconds: 1)
+
+case "icon":
+    // Render the app icon: --iconset DIR writes an .iconset (feed to iconutil), --png PATH one image.
+    if let dir = takeOption("--iconset") {
+        try AppIcon.writeIconset(to: dir)
+        print("wrote \(dir)")
+    }
+    if let path = takeOption("--png") {
+        let px = Int(takeOption("--size") ?? "1024") ?? 1024
+        guard let d = AppIcon.pngData(px: px) else { die("render failed") }
+        try d.write(to: URL(fileURLWithPath: path))
+        print("wrote \(path) (\(px)×\(px))")
+    }
 
 case "params":
     let rate = UInt8(takeOption("--rate") ?? "40") ?? 40

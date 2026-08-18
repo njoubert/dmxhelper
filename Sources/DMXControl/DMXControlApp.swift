@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import DMXCore
 
 @main
 struct DMXControlApp: App {
@@ -24,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // Running as a bare SwiftPM executable there is no bundle to carry an icon, so set it live.
+        if let icon = AppIcon.nsImage() { NSApp.applicationIconImage = icon }
         NSApp.activate(ignoringOtherApps: true)
         // Launch flags: `--high-speed` starts in high-speed mode, `--connect` connects immediately,
         // `--screenshot PATH` renders the window to a PNG after 3 s and quits (used for the README).

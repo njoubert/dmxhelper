@@ -6,6 +6,7 @@
 #                         --connect auto-connects, --high-speed starts in high-speed mode)
 #   ./build.sh app        build a release DMXControl.app bundle in ./dist and open it
 #   ./build.sh cli ...    build, then run dmxcli with the given args   (e.g. ./build.sh cli halo 50 3200)
+#   ./build.sh icon       re-render docs/icon.png from Sources/DMXCore/AppIcon.swift
 #   ./build.sh clean      remove build products
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -28,10 +29,15 @@ case "$cmd" in
     ;;
   app)
     swift build -c release --product DMXControl
+    swift build -c release --product dmxcli
     APP=dist/DMXControl.app
     rm -rf "$APP"
-    mkdir -p "$APP/Contents/MacOS"
+    mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
     cp .build/release/DMXControl "$APP/Contents/MacOS/DMXControl"
+    # Icon: rendered by code (Sources/DMXCore/AppIcon.swift) → .iconset → .icns
+    .build/release/dmxcli icon --iconset dist/AppIcon.iconset >/dev/null
+    iconutil -c icns dist/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+    rm -rf dist/AppIcon.iconset
     cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +46,7 @@ case "$cmd" in
   <key>CFBundleDisplayName</key><string>DMX Control</string>
   <key>CFBundleIdentifier</key><string>com.njoubert.dmxcontrol</string>
   <key>CFBundleExecutable</key><string>DMXControl</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -52,11 +59,15 @@ PLIST
     echo "built $APP"
     open "$APP"
     ;;
+  icon)
+    swift build --product dmxcli >/dev/null
+    .build/debug/dmxcli icon --png docs/icon.png --size 512
+    ;;
   clean)
     rm -rf .build dist
     ;;
   *)
-    echo "usage: $0 [build|run|app|cli <args>|clean]" >&2
+    echo "usage: $0 [build|run|app|cli <args>|icon|clean]" >&2
     exit 2
     ;;
 esac

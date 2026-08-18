@@ -1,5 +1,7 @@
 # dmxhelper — toy DMX controller for macOS
 
+<img src="docs/icon.png" alt="dmxhelper icon" width="96" align="right">
+
 A small native Swift/SwiftUI app (plus a CLI) that drives DMX lights through an
 **Enttec DMX USB Pro**. Built to poke at an **amaran Halo 300x** on channel 1.
 
@@ -47,6 +49,10 @@ A small native Swift/SwiftUI app (plus a CLI) that drives DMX lights through an
     → ~750 fps, ~2 ms input-to-light instead of ~50 ms. Widget parameters are restored on
     disconnect/quit.
 * `Sources/dmxcli/` — scripting/smoke-test CLI.
+* `Sources/DMXCore/AppIcon.swift` — the app icon, drawn in CoreGraphics (three fader capsules under a
+  2700 K → 6500 K gradient). It is the live dock icon for `./build.sh run` (a bare SwiftPM executable
+  has no bundle to carry one) and is exported to `AppIcon.icns` by `./build.sh app`.
+  Re-render the README copy with `./build.sh icon`.
 
 The app window has three panes:
 

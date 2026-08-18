@@ -20,7 +20,8 @@ The Halo's DMX channel maps are in `docs/amaran-dmx-profile-spec-v1.1.pdf` and s
 ./build.sh run [flags]    # build + launch the app. Flags: --connect (auto-connect),
                           #   --high-speed, --demo (preset Halo 60%/4500K), --screenshot PATH (render window to PNG, quit)
 ./build.sh cli <args>     # build + run dmxcli
-./build.sh app            # release build → dist/DMXControl.app (ad-hoc signed) and open it
+./build.sh app            # release build → dist/DMXControl.app (ad-hoc signed, icon baked in) and open it
+./build.sh icon           # re-render docs/icon.png
 ./build.sh clean          # rm -rf .build dist
 swift build --product dmxcli        # rebuild just the CLI
 ```
@@ -52,6 +53,10 @@ then `sips -Z 1400 docs/screenshot.png`.
   label 6 = send DMX (start code + channels, `dmxPacket(universe:channels:)`, min 24 channels),
   labels 3/10 = get params/serial, label 4 = set params. Also the **timing model**
   `dmxLineTime(channels:)` (break + MAB + (1+n)×44 µs) that pacing is built on.
+- `AppIcon` — the icon drawn in CoreGraphics (1024-pt reference canvas, Apple's 824/1024 body +
+  185.4 radius grid). One source for two consumers: the app sets it as the live dock icon at launch
+  (a bare SwiftPM executable has no bundle to carry one), and `dmxcli icon --iconset` feeds
+  `iconutil` in `build.sh app`. Change the drawing, then `./build.sh icon` to refresh the README copy.
 - `AmaranHalo` — `HaloProfile` (Profile 1 = 3ch CCT Universal, Profile 2 = 5ch CCT) and `HaloState`
   (intensity %, CCT K, ±green, strobe, CCT+) → `encode(profile:)` bytes.
 
