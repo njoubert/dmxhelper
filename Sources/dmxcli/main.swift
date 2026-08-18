@@ -10,6 +10,16 @@ import DMXCore
 //   dmxcli halo   [--port PATH] [--hold SEC] [--addr N] [--profile 1|2] INTENSITY% CCT_K [strobe off|random|constant]
 //                                                 e.g. dmxcli halo 50 3200
 //   dmxcli black  [--port PATH]                  send all zeros
+//   dmxcli bench  [--port PATH] [--channels N] [--seconds S] [--fps F]
+//                                                 send N-channel frames for S seconds; --fps 0 (default) floods with
+//                                                 blocking writes (measures intake), --fps F paces at F frames/s and
+//                                                 reports whether write() ever blocked (= we're outrunning the widget)
+//   dmxcli params [--port PATH] [--rate R] [--break B] [--mab M]
+//                                                 set widget parameters (rate 0 = as fast as possible)
+//   dmxcli drain  [--port PATH] [--channels N] [--burst B]
+//                                                 burst B frames then time close() (exposes the driver's baud-based drain wait)
+//   dmxcli latency [--port PATH] [--channels N] [--burst B]
+//                                                 burst B frames then time a get-params reply = real widget queue latency
 
 func die(_ msg: String) -> Never { FileHandle.standardError.write((msg + "\n").data(using: .utf8)!); exit(1) }
 
@@ -101,6 +111,107 @@ case "halo":
 
 case "black":
     stream([UInt8](repeating: 0, count: 512), seconds: 1)
+
+case "params":
+    let rate = UInt8(takeOption("--rate") ?? "40") ?? 40
+    let brk = UInt8(takeOption("--break") ?? "9") ?? 9
+    let mab = UInt8(takeOption("--mab") ?? "1") ?? 1
+    let p = openPort()
+    let msg = EnttecPro.setParametersRequest(breakTime: brk, mabTime: mab, refreshRate: rate)
+    print("sending: \(hex(msg))")
+    do { try p.write(msg) } catch { die(error.localizedDescription) }
+    usleep(100_000)
+    try? p.write(EnttecPro.getParametersRequest())
+    let q = p.read(max: 64, timeout: 0.5)
+    if let m = EnttecPro.parseMessage(q), let prm = EnttecPro.parseParameters(m.data) {
+        print("widget now: break \(prm.breakTime), MAB \(prm.mabTime), refresh \(prm.refreshRate) Hz")
+    } else { print("no reply: \(hex(q))") }
+    p.close()
+
+case "drain":
+    // Send a burst of N frames as fast as possible, then time close(): the kernel won't
+    // return from close() until the widget has swallowed everything, so
+    // rate ≈ N / (send + close). Run with two N values to separate fixed overhead from slope.
+    let nch = Int(takeOption("--channels") ?? "24") ?? 24
+    let n = Int(takeOption("--burst") ?? "100") ?? 100
+    let p = openPort()
+    var universe = [UInt8](repeating: 0, count: 512); universe[0] = 1
+    let pkt = EnttecPro.dmxPacket(universe: universe, channels: nch)
+    let t0 = Date()
+    for _ in 0..<n { do { try p.write(pkt) } catch { die(error.localizedDescription) } }
+    let tSend = Date().timeIntervalSince(t0)
+    let c0 = Date(); p.close(); let tClose = Date().timeIntervalSince(c0)
+    print(String(format: "%3d ch × %4d frames (%6d B): send %.3fs, close %.3fs → total %.3fs → %.1f frames/s, %.1f KB/s",
+                 nch, n, n * pkt.count, tSend, tClose, tSend + tClose, Double(n) / (tSend + tClose), Double(n * pkt.count) / (tSend + tClose) / 1000))
+
+case "latency":
+    // Burst N frames, then queue a Get Widget Parameters request behind them and time the
+    // reply: that's how long the widget took to chew through the burst — real end-to-end
+    // queue latency, independent of close() behaviour.
+    let nch = Int(takeOption("--channels") ?? "512") ?? 512
+    let n = Int(takeOption("--burst") ?? "40") ?? 40
+    let p = openPort()
+    var universe = [UInt8](repeating: 0, count: 512); universe[0] = 1
+    let pkt = EnttecPro.dmxPacket(universe: universe, channels: nch)
+    // baseline first
+    let b0 = Date(); try? p.write(EnttecPro.getParametersRequest()); let bResp = p.read(max: 9, timeout: 3)
+    let base = Date().timeIntervalSince(b0)
+    print(String(format: "baseline get-params round trip: %.1f ms (%d bytes)", base * 1000, bResp.count))
+    let t0 = Date()
+    for _ in 0..<n { do { try p.write(pkt) } catch { die(error.localizedDescription) } }
+    try? p.write(EnttecPro.getParametersRequest())
+    let resp = p.read(max: 9, timeout: 30)
+    let t = Date().timeIntervalSince(t0)
+    let bytes = n * pkt.count
+    print(String(format: "%d × %d-ch frames (%d B) then get-params: reply after %.3f s (%d bytes) → widget intake ≈ %.1f KB/s ≈ %.1f frames/s",
+                 n, nch, bytes, t, resp.count, Double(bytes) / t / 1000, Double(n) / t))
+    let c0 = Date(); p.close(); print(String(format: "close(): %.0f ms", Date().timeIntervalSince(c0) * 1000))
+
+case "bench":
+    let nch = Int(takeOption("--channels") ?? "24") ?? 24
+    let secs = Double(takeOption("--seconds") ?? "3") ?? 3
+    let fps = Double(takeOption("--fps") ?? "0") ?? 0
+    let p = openPort()
+    var universe = [UInt8](repeating: 0, count: 512)
+    universe[0] = 1 // keep the light dim but "on" so it's obvious we're still streaming
+    let pkt = EnttecPro.dmxPacket(universe: universe, channels: nch)
+    print("port:     \(portPath)")
+    print("packet:   \(pkt.count) bytes (\(nch) channels), model: DMX line \(String(format: "%.2f", EnttecPro.dmxLineTime(channels: nch) * 1000)) ms/frame → \(String(format: "%.0f", 1 / EnttecPro.dmxLineTime(channels: nch))) Hz max")
+    if fps > 0 { print("pacing at \(fps) fps for \(secs)s…") } else { print("flooding for \(secs)s with blocking writes…") }
+    let t0 = Date()
+    var frames = 0
+    var maxWrite: TimeInterval = 0
+    var slowWrites = 0
+    var maxQ = 0, lastReportedQ = 0
+    var next = t0
+    while Date().timeIntervalSince(t0) < secs {
+        if fps > 0 {
+            next = next.addingTimeInterval(1 / fps)
+            let wait = next.timeIntervalSinceNow
+            if wait > 0 { usleep(useconds_t(wait * 1_000_000)) }
+        }
+        let w0 = Date()
+        do { try p.write(pkt) } catch { die(error.localizedDescription) }
+        let dt = Date().timeIntervalSince(w0)
+        maxWrite = max(maxWrite, dt)
+        if dt > 0.002 { slowWrites += 1 }
+        frames += 1
+        if frames % 200 == 0 {
+            let q = p.outputQueueDepth; maxQ = max(maxQ, q)
+            if q > lastReportedQ + 512 || (q == 0 && lastReportedQ > 0) {
+                print(String(format: "  t=%.1fs outq=%d bytes", Date().timeIntervalSince(t0), q)); lastReportedQ = q
+            }
+        }
+    }
+    let el = Date().timeIntervalSince(t0)
+    let qEnd = p.outputQueueDepth
+    print("outq: max \(maxQ) bytes, at end \(qEnd) bytes  (>0 = we are outrunning the widget)")
+    let bytes = frames * pkt.count
+    print(String(format: "sent %d frames in %.2fs → %.0f frames/s, %.1f KB/s (%.0f kbaud @10 bits/byte)",
+                 frames, el, Double(frames) / el, Double(bytes) / el / 1000, Double(bytes) * 10 / el / 1000))
+    print(String(format: "write(): max %.1f ms, %d writes >2ms (blocking = USB/widget backpressure)", maxWrite * 1000, slowWrites))
+    let c0 = Date(); p.close()
+    print(String(format: "close(): %.0f ms", Date().timeIntervalSince(c0) * 1000))
 
 default:
     die("unknown command \(cmd)")

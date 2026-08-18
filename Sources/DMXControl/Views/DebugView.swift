@@ -25,11 +25,19 @@ struct DebugView: View {
                     Text(dmx.widgetInfo.isEmpty ? "—" : dmx.widgetInfo)
                 }
                 GridRow {
+                    Text("Mode").foregroundStyle(.secondary)
+                    Text(modeDescription)
+                }
+                GridRow {
                     Text("Rate").foregroundStyle(.secondary)
                     Text(dmx.isConnected
                          ? String(format: "%.0f fps measured (target %.0f) · %d frames · %@",
-                                  dmx.debug.measuredFPS, dmx.frameRate, dmx.framesSent, byteString(dmx.debug.bytesSent))
+                                  dmx.debug.measuredFPS, 1 / max(dmx.debug.targetInterval, 1e-6), dmx.framesSent, byteString(dmx.debug.bytesSent))
                          : "—")
+                }
+                GridRow {
+                    Text("Frame").foregroundStyle(.secondary)
+                    Text(frameDescription)
                 }
                 GridRow {
                     Text("Last sent").foregroundStyle(.secondary)
@@ -85,6 +93,22 @@ struct DebugView: View {
             .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .textBackgroundColor)))
         }
         .padding()
+    }
+
+    private var modeDescription: String {
+        if dmx.highSpeed {
+            let r = dmx.debug.widgetRefresh.map { "\($0)" } ?? "?"
+            return "HIGH SPEED — widget refresh \(r) (0 = as fast as possible), frames shrink to used channels (min \(EnttecPro.minChannels)), paced at DMX line time × \(DMXController.paceMargin)"
+        }
+        let r = dmx.debug.widgetRefresh.map { "\($0) Hz" } ?? "—"
+        return "normal — full 512-channel frames at \(Int(dmx.frameRate)) fps, widget refresh \(r)"
+    }
+
+    private var frameDescription: String {
+        let n = dmx.debug.frameChannels
+        let line = EnttecPro.dmxLineTime(channels: n)
+        return String(format: "%d channels · %d bytes over USB · %.2f ms on the DMX line (max %.0f fps)",
+                      n, EnttecPro.packetBytes(channels: n), line * 1000, 1 / line)
     }
 
     private static let fmt: DateFormatter = {

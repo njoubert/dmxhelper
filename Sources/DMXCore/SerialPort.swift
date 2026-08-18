@@ -1,6 +1,9 @@
 import Foundation
 import Darwin
 
+/// `IOSSIOSPEED` from <IOKit/serial/ioss.h> — `_IOW('T', 2, speed_t)`; the macro doesn't import into Swift.
+private let IOSSIOSPEED: UInt = 0x8008_5402
+
 /// Minimal POSIX serial port wrapper (raw 8N1, no flow control).
 public final class SerialPort: @unchecked Sendable {
     public enum SerialError: Error, LocalizedError {
@@ -27,7 +30,12 @@ public final class SerialPort: @unchecked Sendable {
 
     public var isOpen: Bool { fd >= 0 }
 
-    public func open(baud: speed_t = 115_200) throws {
+    /// Default baud. The DMX USB Pro's data path ignores it (FTDI FIFO → MCU), but the
+    /// macOS driver's close()/drain accounting is *bytes ÷ baud*, so a low value makes
+    /// close() — and process exit — stall for seconds after streaming. Use the FTDI max.
+    public static let defaultBaud: speed_t = 3_000_000
+
+    public func open(baud: speed_t = SerialPort.defaultBaud) throws {
         guard fd < 0 else { return }
         let f = Darwin.open(path, O_RDWR | O_NOCTTY | O_NONBLOCK)
         guard f >= 0 else { throw SerialError.open(path, errno) }
@@ -49,7 +57,9 @@ public final class SerialPort: @unchecked Sendable {
         tio.c_cflag &= ~tcflag_t(CSTOPB)          // 1 stop bit
         tio.c_cflag &= ~tcflag_t(CRTSCTS)         // no HW flow control
         tio.c_iflag &= ~tcflag_t(IXON | IXOFF | IXANY)
-        cfsetspeed(&tio, baud)
+        // termios only knows the standard rates; anything above 230400 must go through
+        // IOSSIOSPEED after tcsetattr (below).
+        cfsetspeed(&tio, min(baud, speed_t(B230400)))
         // VMIN/VTIME for reads: return whatever is available after 100ms.
         withUnsafeMutablePointer(to: &tio.c_cc) { ptr in
             ptr.withMemoryRebound(to: cc_t.self, capacity: Int(NCCS)) { cc in
@@ -58,12 +68,22 @@ public final class SerialPort: @unchecked Sendable {
             }
         }
         guard tcsetattr(f, TCSANOW, &tio) == 0 else { let e = errno; Darwin.close(f); throw SerialError.configure(path, e) }
+        if baud > speed_t(B230400) {
+            var speed = baud
+            if ioctl(f, IOSSIOSPEED, &speed) != 0 { let e = errno; Darwin.close(f); throw SerialError.configure(path, e) }
+        }
         tcflush(f, TCIOFLUSH)
         fd = f
     }
 
+    /// Discards any un-transmitted output, then closes. (Closing a serial port with
+    /// pending output makes the kernel wait for it to drain, and any other process trying
+    /// to open the port blocks behind that.)
     public func close() {
-        if fd >= 0 { Darwin.close(fd); fd = -1 }
+        guard fd >= 0 else { return }
+        tcflush(fd, TCIOFLUSH)
+        Darwin.close(fd)
+        fd = -1
     }
 
     public func write(_ bytes: [UInt8]) throws {
@@ -93,6 +113,14 @@ public final class SerialPort: @unchecked Sendable {
             else if n < 0 && errno != EAGAIN && errno != EINTR { break }
         }
         return out
+    }
+
+    /// Bytes still queued in the kernel tty output queue (not yet handed to the USB driver).
+    /// Grows when we write faster than the device drains.
+    public var outputQueueDepth: Int {
+        guard fd >= 0 else { return 0 }
+        var n: Int32 = 0
+        return ioctl(fd, TIOCOUTQ, &n) == 0 ? Int(n) : 0
     }
 
     /// Enumerate candidate serial devices.

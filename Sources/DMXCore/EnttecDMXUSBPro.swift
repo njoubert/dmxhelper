@@ -22,11 +22,18 @@ public enum EnttecPro {
         case sendRDMDiscovery       = 11
     }
 
-    public struct WidgetParameters {
+    public struct WidgetParameters: Sendable, Equatable {
         public var firmwareVersion: UInt16
         public var breakTime: UInt8      // units of 10.67 µs
         public var mabTime: UInt8        // units of 10.67 µs
         public var refreshRate: UInt8    // packets/sec, 0 = as fast as possible
+
+        public init(firmwareVersion: UInt16, breakTime: UInt8, mabTime: UInt8, refreshRate: UInt8) {
+            self.firmwareVersion = firmwareVersion; self.breakTime = breakTime
+            self.mabTime = mabTime; self.refreshRate = refreshRate
+        }
+        /// The widget's factory-ish defaults (what ours reported: break 96 µs, MAB 10.7 µs, 40 Hz).
+        public static let defaults = WidgetParameters(firmwareVersion: 0, breakTime: 9, mabTime: 1, refreshRate: 40)
     }
 
     /// Wrap a payload in the widget message framing.
@@ -43,15 +50,38 @@ public enum EnttecPro {
         return msg
     }
 
-    /// Build a "Send DMX Packet" message for a full 512-channel universe.
+    /// The widget will not output fewer than this many channels per frame.
+    public static let minChannels = 24
+
+    /// Build a "Send DMX Packet" message. `channels` limits how many slots are sent
+    /// (clamped to 24…512); a shorter frame is faster on the DMX line.
     /// The widget requires the DMX start code (0x00 for standard dimmer data) as the first byte.
-    public static func dmxPacket(universe: [UInt8]) -> [UInt8] {
-        var data = [UInt8](repeating: 0, count: 513)
+    public static func dmxPacket(universe: [UInt8], channels: Int = 512) -> [UInt8] {
+        let n = min(max(channels, minChannels), 512)
+        var data = [UInt8](repeating: 0, count: n + 1)
         data[0] = 0x00 // start code
-        let n = min(universe.count, 512)
-        if n > 0 { data.replaceSubrange(1..<(1 + n), with: universe[0..<n]) }
+        let avail = min(universe.count, n)
+        if avail > 0 { data.replaceSubrange(1..<(1 + avail), with: universe[0..<avail]) }
         return frame(.sendDMXPacket, data)
     }
+
+    /// Set Widget Parameters (label 4). Values persist in the widget until changed again.
+    /// - breakTime: 9…127 (×10.67 µs), mabTime: 1…127 (×10.67 µs),
+    /// - refreshRate: 1…40 packets/s, or 0 = as fast as the frame length allows.
+    public static func setParametersRequest(breakTime: UInt8, mabTime: UInt8, refreshRate: UInt8) -> [UInt8] {
+        frame(.setWidgetParameters, [0, 0, max(9, min(127, breakTime)), max(1, min(127, mabTime)), min(40, refreshRate)])
+    }
+
+    // MARK: Timing model
+
+    /// Time one DMX frame occupies on the DMX512 line: break + MAB + (1 + channels) slots at 44 µs.
+    public static func dmxLineTime(channels: Int, breakTime: UInt8 = 9, mabTime: UInt8 = 1) -> TimeInterval {
+        let brk = Double(breakTime) * 10.67e-6, mab = Double(mabTime) * 10.67e-6
+        return brk + mab + Double(1 + channels) * 44e-6
+    }
+
+    /// Bytes on the USB/serial side for one send-DMX message (5 header/trailer + start code + channels).
+    public static func packetBytes(channels: Int) -> Int { channels + 6 }
 
     public static func getParametersRequest() -> [UInt8] {
         // user configuration size (LSB, MSB) = 0

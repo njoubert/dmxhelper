@@ -35,11 +35,30 @@ struct ContentView: View {
 
             if dmx.isConnected {
                 Button("Disconnect") { dmx.disconnect() }
+            } else if dmx.isConnecting {
+                Button("Connecting…") {}.disabled(true)
+                ProgressView().controlSize(.small)
             } else {
                 Button("Connect") { dmx.connect() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(dmx.selectedPort.isEmpty)
             }
+
+            Divider().frame(height: 18)
+
+            Picker("Rate", selection: $dmx.frameRate) {
+                Text("20 fps").tag(20.0)
+                Text("30 fps").tag(30.0)
+                Text("40 fps").tag(40.0)
+            }
+            .fixedSize()
+            .disabled(dmx.highSpeed)
+            .help("Normal mode frame rate. 40 fps = the widget's own DMX refresh rate; a full 512-channel frame takes ~23 ms on the wire, so ~44 Hz is the physical limit.")
+
+            Toggle("High speed", isOn: $dmx.highSpeed)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .help("Set the widget to 'as fast as possible', send only the channels in use (min 24), and pace at the DMX line rate of that short frame (~750 fps for a 24-channel frame).")
 
             Circle()
                 .fill(dmx.isConnected ? Color.green : Color.red)
@@ -52,7 +71,7 @@ struct ContentView: View {
             }
             Spacer()
             if dmx.isConnected {
-                Text("\(dmx.framesSent) frames · \(Int(dmx.frameRate)) fps")
+                Text(String(format: "%.0f fps · %d ch/frame · %d frames", dmx.debug.measuredFPS, dmx.debug.frameChannels, dmx.framesSent))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }

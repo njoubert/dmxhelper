@@ -4,19 +4,34 @@ import Combine
 
 /// Owns the 512-channel universe and streams it to an Enttec DMX USB Pro.
 ///
-/// UI mutates `channels` on the main actor; a background timer snapshots the
-/// frame under a lock and writes it to the widget at `frameRate` Hz.
+/// UI mutates `channels` on the main actor; a background timer on `ioQueue`
+/// snapshots the frame under `lock` and writes it to the widget.
+///
+/// Two streaming modes:
+///  * Normal: full 512-channel frames at `frameRate` fps (default 40 = the widget's
+///    own DMX refresh rate; a full frame takes ~22.7 ms on the wire, so ~44 Hz is physics).
+///  * High speed: widget refresh set to 0 ("as fast as possible"), frames shrunk to the
+///    highest in-use channel (min 24), and paced at the DMX line time of that short frame
+///    (~1.2 ms → ~750 fps for a 24-channel frame). Sending faster than the line can carry
+///    only fills buffers and adds latency (measured: it can even wedge the widget), so we
+///    never do that.
 @MainActor
 final class DMXController: ObservableObject {
+    static let shared = DMXController()
+
     // MARK: Published UI state
     @Published private(set) var channels: [UInt8] = Array(repeating: 0, count: 512)
     @Published var selectedPort: String = ""
     @Published private(set) var availablePorts: [String] = []
     @Published private(set) var isConnected = false
+    @Published private(set) var isConnecting = false
     @Published private(set) var statusMessage = "Disconnected"
     @Published private(set) var widgetInfo: String = ""
     @Published private(set) var framesSent: Int = 0
-    @Published var frameRate: Double = 30 { didSet { restartTimerIfNeeded() } }
+    /// Normal-mode frame rate. Ignored in high-speed mode.
+    @Published var frameRate: Double = 40 { didSet { lock.lock(); frameRateHint = frameRate; lock.unlock() } }
+    /// High-speed mode: widget refresh 0 + shrunken frames + line-rate pacing.
+    @Published var highSpeed = false { didSet { if oldValue != highSpeed { applyHighSpeed() } } }
 
     /// Snapshot of what was most recently written to the widget, for the debug panel.
     struct OutputDebug {
@@ -25,27 +40,42 @@ final class DMXController: ObservableObject {
         var measuredFPS: Double = 0
         var bytesSent: Int = 0
         var writeErrors: Int = 0
+        var frameChannels: Int = 512          // channels in the last packet
+        var targetInterval: TimeInterval = 1.0 / 40
+        var widgetRefresh: Int? = nil         // widget's refresh-rate parameter as we last set/read it
     }
     @Published private(set) var debug = OutputDebug()
     /// Timestamped log of every frame whose content differed from the previous one.
     @Published private(set) var changeLog: [String] = []
     static let changeLogLimit = 200
 
-    // MARK: Private
-    // Shared with the ioQueue timer; every access goes through `lock`.
+    // MARK: Shared with ioQueue — every access goes through `lock`.
     private let lock = NSLock()
     nonisolated(unsafe) private var frame: [UInt8] = Array(repeating: 0, count: 512)
     nonisolated(unsafe) private var port: SerialPort?
+    nonisolated(unsafe) private var frameRateHint: Double = 40
+    nonisolated(unsafe) private var highSpeedFlag = false
+
+    // MARK: ioQueue-only state (never touched from main)
+    private let ioQueue = DispatchQueue(label: "dmx.enttec.io", qos: .userInteractive)
+    nonisolated(unsafe) private var timer: DispatchSourceTimer?
+    nonisolated(unsafe) private var timerInterval: TimeInterval = 0
     nonisolated(unsafe) private var sentCounter = 0
     nonisolated(unsafe) private var bytesCounter = 0
-    // ioQueue-only state (never touched from main):
     nonisolated(unsafe) private var lastSnapshot: [UInt8]? = nil
     nonisolated(unsafe) private var sendTimes: [TimeInterval] = []
     nonisolated(unsafe) private var pendingLog: [String] = []
-    nonisolated(unsafe) private var lastPacketSent: [UInt8] = []
-    nonisolated(unsafe) private var lastSendTime: Date? = nil
-    private let ioQueue = DispatchQueue(label: "dmx.enttec.io", qos: .userInteractive)
-    private var timer: DispatchSourceTimer?
+    nonisolated(unsafe) private var lastUIPush = Date.distantPast
+    nonisolated(unsafe) private var hwmChannels = 0            // high-water mark of in-use channels
+    nonisolated(unsafe) private var hwmExpiry = Date.distantPast
+    nonisolated(unsafe) private var originalParams: EnttecPro.WidgetParameters? = nil
+    nonisolated(unsafe) private var widgetRefreshNow: Int? = nil
+
+    /// How long a channel that went back to 0 keeps the frame long enough to include it,
+    /// so the fixture actually receives the zero before we shrink the frame.
+    nonisolated static let shrinkHold: TimeInterval = 2.0
+    /// Safety margin on top of the modelled DMX line time when pacing high-speed frames.
+    nonisolated static let paceMargin = 1.1
 
     init() {
         refreshPorts()
@@ -61,13 +91,22 @@ final class DMXController: ObservableObject {
     }
 
     func connect() {
-        guard !isConnected, !selectedPort.isEmpty else { return }
+        guard !isConnected, !isConnecting, !selectedPort.isEmpty else { return }
         let path = selectedPort
+        isConnecting = true
         statusMessage = "Opening \(path)…"
+        // If open() blocks (e.g. a previous instance is still closing the port in the
+        // kernel — that takes ~1 s after a stream is killed), tell the user what's going on.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, self.isConnecting else { return }
+            self.statusMessage = "Still opening \(path)… another process may still be closing it; wait a few seconds or unplug/replug the widget."
+        }
+        let wantHighSpeed = highSpeed
         ioQueue.async { [weak self] in
             let p = SerialPort(path: path)
             var info = ""
             var err: String?
+            var params: EnttecPro.WidgetParameters?
             do {
                 try p.open()
                 // Query the widget so we can confirm it's really an Enttec Pro.
@@ -82,41 +121,91 @@ final class DMXController: ObservableObject {
                 }
                 if let m = EnttecPro.parseMessage(paramResp), m.label == EnttecPro.Label.getWidgetParameters.rawValue,
                    let prm = EnttecPro.parseParameters(m.data) {
+                    params = prm
                     let fw = "\(prm.firmwareVersion >> 8).\(prm.firmwareVersion & 0xFF)"
-                    let brk = Double(prm.breakTime) * 10.67
-                    let mab = Double(prm.mabTime) * 10.67
                     parts.append("FW \(fw)")
-                    parts.append(String(format: "break %.0fµs, MAB %.0fµs, refresh %d Hz", brk, mab, prm.refreshRate))
+                    parts.append(String(format: "break %.0fµs, MAB %.0fµs, refresh %d Hz",
+                                        Double(prm.breakTime) * 10.67, Double(prm.mabTime) * 10.67, prm.refreshRate))
                 }
                 info = parts.isEmpty ? "No reply from widget (still streaming blindly)" : parts.joined(separator: " · ")
+                if wantHighSpeed {
+                    try p.write(EnttecPro.setParametersRequest(breakTime: 9, mabTime: 1, refreshRate: 0))
+                }
             } catch {
                 err = error.localizedDescription
                 p.close()
             }
+            guard let self else { return }
+            // Reset ioQueue-only streaming state.
+            self.lastSnapshot = nil
+            self.sendTimes = []
+            self.hwmChannels = 0
+            self.hwmExpiry = .distantPast
+            self.originalParams = params
+            self.widgetRefreshNow = wantHighSpeed ? 0 : params.map { Int($0.refreshRate) }
             DispatchQueue.main.async {
+                self.isConnecting = false
                 if let err {
-                    self?.statusMessage = "Error: \(err)"
-                    self?.isConnected = false
+                    self.statusMessage = "Error: \(err)"
+                    self.isConnected = false
                     return
                 }
-                self?.setPort(p)
-                self?.ioQueue.async { self?.lastSnapshot = nil; self?.sendTimes = [] }
-                self?.isConnected = true
-                self?.widgetInfo = info
-                self?.statusMessage = "Connected to \(path)"
-                self?.startTimer()
+                self.setPort(p)
+                self.isConnected = true
+                self.widgetInfo = info
+                self.statusMessage = "Connected to \(path)"
+                self.startStreaming()
             }
         }
     }
 
     func disconnect() {
-        stopTimer()
+        guard isConnected || isConnecting else { return }
         let p = currentPort()
         setPort(nil)
-        ioQueue.async { p?.close() }
+        let restore = originalParamsForRestore()
+        ioQueue.async { [weak self] in
+            self?.stopTimerOnIO()
+            Self.restoreAndClose(p, restore: restore)
+        }
         isConnected = false
         widgetInfo = ""
         statusMessage = "Disconnected"
+        debug.widgetRefresh = nil
+    }
+
+    /// Synchronous shutdown for app termination: stops streaming, restores widget
+    /// parameters if we changed them, flushes and closes the port — and only returns once
+    /// the kernel has actually closed the port, so the next launch can open it immediately.
+    func shutdownSync() {
+        let p = currentPort()
+        setPort(nil)
+        let restore = originalParamsForRestore()
+        let t0 = Date()
+        ioQueue.sync { [self] in
+            stopTimerOnIO()
+            Self.restoreAndClose(p, restore: restore)
+        }
+        isConnected = false
+        if p != nil {
+            FileHandle.standardError.write("DMXControl: port closed in \(Int(Date().timeIntervalSince(t0) * 1000)) ms\n".data(using: .utf8)!)
+        }
+    }
+
+    /// Runs on ioQueue.
+    nonisolated private static func restoreAndClose(_ p: SerialPort?, restore: EnttecPro.WidgetParameters?) {
+        guard let p else { return }
+        if let r = restore {
+            try? p.write(EnttecPro.setParametersRequest(breakTime: r.breakTime, mabTime: r.mabTime, refreshRate: r.refreshRate))
+            usleep(20_000)
+        }
+        p.close()
+    }
+
+    /// If high-speed mode changed the widget's parameters, what to put back.
+    private func originalParamsForRestore() -> EnttecPro.WidgetParameters? {
+        guard highSpeed else { return nil }
+        return originalParams ?? EnttecPro.WidgetParameters.defaults
     }
 
     // MARK: Channel access (1-based, DMX-style)
@@ -144,36 +233,93 @@ final class DMXController: ObservableObject {
         lock.lock(); frame = channels; lock.unlock()
     }
 
-    // MARK: Streaming
+    // MARK: High-speed mode
 
-    private func startTimer() {
-        stopTimer()
-        frameRateHint = frameRate
-        let interval = 1.0 / max(1, frameRate)
-        let t = DispatchSource.makeTimerSource(queue: ioQueue)
-        t.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(1))
-        t.setEventHandler { [weak self] in self?.tick() }
-        t.resume()
-        timer = t
+    private func applyHighSpeed() {
+        let on = highSpeed
+        lock.lock(); highSpeedFlag = on; lock.unlock()
+        guard isConnected, let p = currentPort() else { return }
+        let restore = originalParams ?? EnttecPro.WidgetParameters.defaults
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            let msg = on
+                ? EnttecPro.setParametersRequest(breakTime: 9, mabTime: 1, refreshRate: 0)
+                : EnttecPro.setParametersRequest(breakTime: restore.breakTime, mabTime: restore.mabTime, refreshRate: restore.refreshRate)
+            try? p.write(msg)
+            self.widgetRefreshNow = on ? 0 : Int(restore.refreshRate)
+            self.hwmChannels = 0
+            self.hwmExpiry = .distantPast
+            self.pendingLog.append(Self.stamp(Date()) + (on
+                ? "  high speed ON → widget refresh 0 (as fast as possible), frames shrink to used channels"
+                : "  high speed OFF → widget refresh \(restore.refreshRate) Hz, full 512-channel frames"))
+            self.reschedule(interval: self.desiredInterval(channels: on ? EnttecPro.minChannels : 512))
+        }
     }
 
-    private func stopTimer() {
+    // MARK: Streaming
+
+    private func startStreaming() {
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            self.stopTimerOnIO()
+            let t = DispatchSource.makeTimerSource(queue: self.ioQueue)
+            t.setEventHandler { [weak self] in self?.tick() }
+            self.timer = t
+            self.timerInterval = 0
+            self.reschedule(interval: self.desiredInterval(channels: self.highSpeedFlag ? EnttecPro.minChannels : 512))
+            t.resume()
+        }
+    }
+
+    /// Runs on ioQueue.
+    nonisolated private func stopTimerOnIO() {
         timer?.cancel()
         timer = nil
     }
 
-    private func restartTimerIfNeeded() {
-        if isConnected { startTimer() }
+    /// Runs on ioQueue. Re-arms the timer if the interval changed by more than a few %.
+    nonisolated private func reschedule(interval: TimeInterval) {
+        guard let t = timer else { return }
+        if abs(interval - timerInterval) / max(interval, 1e-6) < 0.03 { return }
+        timerInterval = interval
+        t.schedule(deadline: .now(), repeating: interval, leeway: .microseconds(200))
+    }
+
+    /// Runs on ioQueue. Interval between frames for the given frame length.
+    nonisolated private func desiredInterval(channels: Int) -> TimeInterval {
+        lock.lock(); let hs = highSpeedFlag; let fps = frameRateHint; lock.unlock()
+        if hs {
+            // Pace at the DMX line time of the (short) frame, plus margin.
+            return EnttecPro.dmxLineTime(channels: channels) * Self.paceMargin
+        }
+        return 1.0 / max(1, fps)
     }
 
     /// Runs on ioQueue.
     nonisolated private func tick() {
         lock.lock()
         let snapshot = frame
+        let hs = highSpeedFlag
         lock.unlock()
-        let packet = EnttecPro.dmxPacket(universe: snapshot)
         guard let p = currentPort() else { return }
         let now = Date()
+
+        // Frame length: full universe normally; in high-speed mode, through the highest
+        // in-use channel with a hold so fixtures still receive the zeros after a channel drops.
+        var nch = 512
+        if hs {
+            let used = (snapshot.lastIndex(where: { $0 != 0 }) ?? -1) + 1
+            if used >= hwmChannels {
+                hwmChannels = used; hwmExpiry = now.addingTimeInterval(Self.shrinkHold)
+            } else if now > hwmExpiry {
+                hwmChannels = used; hwmExpiry = now.addingTimeInterval(Self.shrinkHold)
+            }
+            nch = max(EnttecPro.minChannels, hwmChannels)
+        }
+        let packet = EnttecPro.dmxPacket(universe: snapshot, channels: nch)
+        let interval = desiredInterval(channels: nch)
+        reschedule(interval: interval)
+
         do {
             try p.write(packet)
         } catch {
@@ -185,34 +331,31 @@ final class DMXController: ObservableObject {
             return
         }
 
-        // Bookkeeping (ioQueue-only state).
+        // Bookkeeping.
         sentCounter += 1
         bytesCounter += packet.count
-        lastPacketSent = packet
-        lastSendTime = now
         sendTimes.append(now.timeIntervalSinceReferenceDate)
         let cutoff = now.timeIntervalSinceReferenceDate - 1.0
         while let f = sendTimes.first, f < cutoff { sendTimes.removeFirst() }
 
         if let prev = lastSnapshot {
-            if prev != snapshot {
-                pendingLog.append(Self.describeChange(from: prev, to: snapshot, at: now))
-            }
+            if prev != snapshot { pendingLog.append(Self.describeChange(from: prev, to: snapshot, at: now)) }
         } else {
             pendingLog.append(Self.stamp(now) + "  first frame → " + Self.describeActive(snapshot))
         }
         lastSnapshot = snapshot
 
-        // Push to the UI at ~5 Hz (or immediately when something changed).
-        if !pendingLog.isEmpty || sentCounter % max(1, Int(frameRateHint / 5)) == 0 {
+        // Push to the UI at ~5 Hz, or immediately when something changed.
+        if !pendingLog.isEmpty || now.timeIntervalSince(lastUIPush) > 0.2 {
+            lastUIPush = now
             let dbg = OutputDebug(lastPacket: packet, lastSentAt: now, measuredFPS: Double(sendTimes.count),
-                                  bytesSent: bytesCounter, writeErrors: 0)
+                                  bytesSent: bytesCounter, writeErrors: 0, frameChannels: nch,
+                                  targetInterval: interval, widgetRefresh: widgetRefreshNow)
             let n = sentCounter
             let log = pendingLog; pendingLog.removeAll()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                let errs = self.debug.writeErrors
-                var d = dbg; d.writeErrors = errs
+                var d = dbg; d.writeErrors = self.debug.writeErrors
                 self.debug = d
                 self.framesSent = n
                 if !log.isEmpty {
@@ -225,8 +368,16 @@ final class DMXController: ObservableObject {
         }
     }
 
-    /// Cached copy of `frameRate` readable from ioQueue.
-    nonisolated(unsafe) private var frameRateHint: Double = 30
+    // MARK: Helpers
+
+    nonisolated private func currentPort() -> SerialPort? {
+        lock.lock(); defer { lock.unlock() }
+        return port
+    }
+
+    nonisolated private func setPort(_ p: SerialPort?) {
+        lock.lock(); port = p; lock.unlock()
+    }
 
     nonisolated private static let timeFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f
@@ -249,13 +400,4 @@ final class DMXController: ObservableObject {
     }
 
     func clearChangeLog() { changeLog.removeAll() }
-
-    nonisolated private func currentPort() -> SerialPort? {
-        lock.lock(); defer { lock.unlock() }
-        return port
-    }
-
-    nonisolated private func setPort(_ p: SerialPort?) {
-        lock.lock(); port = p; lock.unlock()
-    }
 }
