@@ -3,9 +3,12 @@
 A small native Swift/SwiftUI app (plus a CLI) that drives DMX lights through an
 **Enttec DMX USB Pro**. Built to poke at an **amaran Halo 300x** on channel 1.
 
+<img src="docs/screenshot.png" alt="DMX Control app: Halo fixture panel, raw channel sliders, and DMX output debug pane" width="900">
+
 ```
 ./build.sh run              # build + launch the SwiftUI app
 ./build.sh run --connect --high-speed   # …and connect immediately in high-speed mode
+./build.sh run --connect --demo --screenshot docs/screenshot.png   # render the window to a PNG and quit
 ./build.sh app              # release build → dist/DMXControl.app and open it
 ./build.sh cli info         # query the widget (serial, firmware, break/MAB/refresh)
 ./build.sh cli halo 50 3200 # Halo @ addr 1: 50% intensity, 3200K, hold 2s

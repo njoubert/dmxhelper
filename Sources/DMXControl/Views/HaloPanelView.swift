@@ -5,9 +5,15 @@ import DMXCore
 /// universe whenever anything changes.
 struct HaloPanelView: View {
     @EnvironmentObject var dmx: DMXController
-    @State private var state = HaloState()
+    @State private var state: HaloState
     @State private var profile: HaloProfile = .cctUniversal3ch
     @State private var startAddress: Int = 1
+
+    init() {
+        var s = HaloState()
+        if CommandLine.arguments.contains("--demo") { s.intensity = 60; s.cct = 4500 }   // for screenshots
+        _state = State(initialValue: s)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
