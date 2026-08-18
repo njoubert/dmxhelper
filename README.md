@@ -1,11 +1,17 @@
-# dmxhelper — toy DMX controller for macOS
+<p align="center">
+  <img src="docs/icon.png" alt="dmxhelper icon" width="128">
+</p>
 
-<img src="docs/icon.png" alt="dmxhelper icon" width="96" align="right">
+<h1 align="center">dmxhelper</h1>
 
-A small native Swift/SwiftUI app (plus a CLI) that drives DMX lights through an
-**Enttec DMX USB Pro**. Built to poke at an **amaran Halo 300x** on channel 1.
+<p align="center">
+  A toy DMX controller for macOS — a native Swift/SwiftUI app plus a CLI, driving lights through an
+  <b>Enttec DMX USB Pro</b>.<br>Built to poke at an <b>amaran Halo 300x</b> on channel 1.
+</p>
 
-<img src="docs/screenshot.png" alt="DMX Control app: Halo fixture panel, raw channel sliders, and DMX output debug pane" width="900">
+<p align="center">
+  <img src="docs/screenshot.png" alt="DMX Control app: Halo fixture panel, raw channel sliders, and DMX output debug pane" width="900">
+</p>
 
 ```
 ./build.sh run              # build + launch the SwiftUI app
