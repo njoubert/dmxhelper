@@ -29,10 +29,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let icon = AppIcon.nsImage() { NSApp.applicationIconImage = icon }
         NSApp.activate(ignoringOtherApps: true)
         // Launch flags: `--high-speed` starts in high-speed mode, `--connect` connects immediately,
+        // `--monitor` starts listening on DMX IN instead of transmitting,
         // `--screenshot PATH` renders the window to a PNG after 3 s and quits (used for the README).
         let args = CommandLine.arguments
         if args.contains("--high-speed") { DMXController.shared.highSpeed = true }
         if args.contains("--connect") { DMXController.shared.connect() }
+        if args.contains("--monitor") { DMXController.shared.monitoring = true }
         if let i = args.firstIndex(of: "--screenshot"), i + 1 < args.count {
             let path = args[i + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in

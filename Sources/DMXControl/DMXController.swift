@@ -45,6 +45,30 @@ final class DMXController: ObservableObject {
         var widgetRefresh: Int? = nil         // widget's refresh-rate parameter as we last set/read it
     }
     @Published private(set) var debug = OutputDebug()
+
+    /// What the widget hears on its DMX IN port, refreshed at 10 Hz while `monitoring`.
+    struct InputSnapshot {
+        var slots = [UInt8](repeating: 0, count: 512)
+        var lastChange = [Date](repeating: .distantPast, count: 512)
+        var frames = 0                 // label 5 messages
+        var deltas = 0                 // label 9 messages
+        var fps: Double = 0
+        var slotCount = 0              // widest frame seen; sources may send fewer than 512
+        var startCode: UInt8? = nil
+        var lastFrameAt: Date? = nil
+        var overflows = 0              // widget receive FIFO overran (we were too slow)
+        var overruns = 0               // trouble on the incoming line
+        var otherMessages = 0
+        var highestLit = 0
+        var resyncs = 0
+
+        /// Frames still arriving — DMX sources repeat themselves, so a gap means signal loss.
+        var live: Bool { lastFrameAt.map { Date().timeIntervalSince($0) < 1.0 } ?? false }
+    }
+    @Published private(set) var input = InputSnapshot()
+
+    /// Listen to DMX IN instead of transmitting. The Pro can only do one at a time.
+    @Published var monitoring = false { didSet { if oldValue != monitoring { applyMonitoring() } } }
     /// Timestamped log of every frame whose content differed from the previous one.
     @Published private(set) var changeLog: [String] = []
     static let changeLogLimit = 200
@@ -70,6 +94,11 @@ final class DMXController: ObservableObject {
     nonisolated(unsafe) private var hwmExpiry = Date.distantPast
     nonisolated(unsafe) private var originalParams: EnttecPro.WidgetParameters? = nil
     nonisolated(unsafe) private var widgetRefreshNow: Int? = nil
+    nonisolated(unsafe) private var readSource: DispatchSourceRead?
+    nonisolated(unsafe) private var rxTimer: DispatchSourceTimer?
+    nonisolated(unsafe) private var rxStream = EnttecPro.MessageStream()
+    nonisolated(unsafe) private var rx = InputSnapshot()
+    nonisolated(unsafe) private var rxTimes: [TimeInterval] = []
 
     /// How long a channel that went back to 0 keeps the frame long enough to include it,
     /// so the fixture actually receives the zero before we shrink the frame.
@@ -154,7 +183,7 @@ final class DMXController: ObservableObject {
                 self.isConnected = true
                 self.widgetInfo = info
                 self.statusMessage = "Connected to \(path)"
-                self.startStreaming()
+                if self.monitoring { self.applyMonitoring() } else { self.startStreaming() }
             }
         }
     }
@@ -166,6 +195,7 @@ final class DMXController: ObservableObject {
         let restore = originalParamsForRestore()
         ioQueue.async { [weak self] in
             self?.stopTimerOnIO()
+            self?.stopReceivingOnIO()
             Self.restoreAndClose(p, restore: restore)
         }
         isConnected = false
@@ -184,6 +214,7 @@ final class DMXController: ObservableObject {
         let t0 = Date()
         ioQueue.sync { [self] in
             stopTimerOnIO()
+            stopReceivingOnIO()
             Self.restoreAndClose(p, restore: restore)
         }
         isConnected = false
@@ -253,6 +284,112 @@ final class DMXController: ObservableObject {
                 ? "  high speed ON → widget refresh 0 (as fast as possible), frames shrink to used channels"
                 : "  high speed OFF → widget refresh \(restore.refreshRate) Hz, full 512-channel frames"))
             self.reschedule(interval: self.desiredInterval(channels: on ? EnttecPro.minChannels : 512))
+        }
+    }
+
+    // MARK: Monitoring DMX IN
+
+    /// The widget can transmit or listen, never both: label 8 puts it into receive mode and it
+    /// stays there until the next frame we send. So turning monitoring on stops the send timer,
+    /// and turning it off restarts it — the first tick is what flips the widget back.
+    private func applyMonitoring() {
+        let on = monitoring
+        guard isConnected, let p = currentPort() else { return }
+        if on {
+            ioQueue.async { [weak self] in
+                guard let self else { return }
+                self.stopTimerOnIO()
+                self.rx = InputSnapshot()
+                self.rxStream = EnttecPro.MessageStream()
+                self.rxTimes = []
+                try? p.write(EnttecPro.receiveDMXRequest(.always))
+                self.pendingLog.append(Self.stamp(Date()) + "  monitor ON → widget listening on DMX IN, output stopped")
+                self.startReceivingOnIO(p)
+            }
+            statusMessage = "Listening on DMX IN (not transmitting)"
+        } else {
+            ioQueue.async { [weak self] in
+                guard let self else { return }
+                self.stopReceivingOnIO()
+                self.pendingLog.append(Self.stamp(Date()) + "  monitor OFF → transmitting again")
+            }
+            statusMessage = "Connected to \(selectedPort)"
+            startStreaming()
+        }
+    }
+
+    /// Runs on ioQueue. A read source fires only when bytes are actually there; a separate
+    /// 10 Hz timer pushes to the UI whether or not anything arrived, so signal loss shows up.
+    nonisolated private func startReceivingOnIO(_ p: SerialPort) {
+        let src = DispatchSource.makeReadSource(fileDescriptor: p.fd, queue: ioQueue)
+        src.setEventHandler { [weak self] in self?.readInput(p) }
+        readSource = src
+        src.resume()
+
+        let t = DispatchSource.makeTimerSource(queue: ioQueue)
+        t.setEventHandler { [weak self] in self?.pushInput() }
+        t.schedule(deadline: .now(), repeating: 0.1, leeway: .milliseconds(20))
+        rxTimer = t
+        t.resume()
+    }
+
+    /// Runs on ioQueue. Must happen before the port closes — the read source holds its fd.
+    nonisolated private func stopReceivingOnIO() {
+        readSource?.cancel(); readSource = nil
+        rxTimer?.cancel(); rxTimer = nil
+    }
+
+    /// Runs on ioQueue.
+    nonisolated private func readInput(_ p: SerialPort) {
+        let bytes = p.readAvailable()
+        guard !bytes.isEmpty else { return }
+        rxStream.append(bytes)
+        let now = Date()
+        while let msg = rxStream.next() {
+            switch msg.label {
+            case EnttecPro.Label.receivedDMXPacket.rawValue:
+                guard let frame = EnttecPro.parseReceivedDMX(msg.data) else { break }
+                rx.frames += 1
+                rx.startCode = frame.startCode
+                rx.slotCount = max(rx.slotCount, frame.slots.count)
+                if frame.overflow { rx.overflows += 1 }
+                if frame.overrun { rx.overruns += 1 }
+                for (i, v) in frame.slots.enumerated() where i < 512 {
+                    if rx.slots[i] != v { rx.slots[i] = v; rx.lastChange[i] = now }
+                    if v != 0 { rx.highestLit = max(rx.highestLit, i + 1) }
+                }
+                rx.lastFrameAt = now
+                rxTimes.append(now.timeIntervalSinceReferenceDate)
+            case EnttecPro.Label.receivedDMXChangeOfState.rawValue:
+                for slot in EnttecPro.applyChangeOfState(msg.data, to: &rx.slots) {
+                    rx.lastChange[slot - 1] = now
+                    if rx.slots[slot - 1] != 0 { rx.highestLit = max(rx.highestLit, slot) }
+                }
+                rx.deltas += 1
+                rx.lastFrameAt = now
+                rxTimes.append(now.timeIntervalSinceReferenceDate)
+            default:
+                rx.otherMessages += 1
+            }
+        }
+    }
+
+    /// Runs on ioQueue at 10 Hz while monitoring.
+    nonisolated private func pushInput() {
+        let cutoff = Date().timeIntervalSinceReferenceDate - 1.0
+        while let f = rxTimes.first, f < cutoff { rxTimes.removeFirst() }
+        var snapshot = rx
+        snapshot.fps = Double(rxTimes.count)
+        snapshot.resyncs = rxStream.resyncs
+        let log = pendingLog; pendingLog.removeAll()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.input = snapshot
+            guard !log.isEmpty else { return }
+            self.changeLog.append(contentsOf: log)
+            if self.changeLog.count > Self.changeLogLimit {
+                self.changeLog.removeFirst(self.changeLog.count - Self.changeLogLimit)
+            }
         }
     }
 

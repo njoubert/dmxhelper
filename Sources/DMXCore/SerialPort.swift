@@ -115,6 +115,17 @@ public final class SerialPort: @unchecked Sendable {
         return out
     }
 
+    /// One read() of whatever the driver already has buffered, up to `max` bytes.
+    /// With VMIN=0/VTIME=1 this blocks at most ~100 ms on a quiet port, which makes it a
+    /// self-pacing read loop: no sleep needed, and no spinning.
+    public func readAvailable(max: Int = 8192) -> [UInt8] {
+        guard fd >= 0 else { return [] }
+        var buf = [UInt8](repeating: 0, count: max)
+        let n = buf.withUnsafeMutableBufferPointer { Darwin.read(fd, $0.baseAddress!, max) }
+        guard n > 0 else { return [] }
+        return Array(buf[0..<n])
+    }
+
     /// Bytes still queued in the kernel tty output queue (not yet handed to the USB driver).
     /// Grows when we write faster than the device drains.
     public var outputQueueDepth: Int {

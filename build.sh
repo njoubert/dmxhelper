@@ -3,7 +3,8 @@
 #
 #   ./build.sh            build everything (debug)
 #   ./build.sh run        build, then launch the SwiftUI app (extra args pass through:
-#                         --connect auto-connects, --high-speed starts in high-speed mode)
+#                         --connect auto-connects, --high-speed starts in high-speed mode,
+#                         --monitor listens on DMX IN instead of transmitting)
 #   ./build.sh app        build a release DMXControl.app bundle in ./dist and open it
 #   ./build.sh cli ...    build, then run dmxcli with the given args   (e.g. ./build.sh cli halo 50 3200)
 #   ./build.sh icon       re-render docs/icon.png from Sources/DMXCore/AppIcon.swift

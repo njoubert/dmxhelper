@@ -10,6 +10,14 @@ import DMXCore
 //   dmxcli halo   [--port PATH] [--hold SEC] [--addr N] [--profile 1|2] INTENSITY% CCT_K [strobe off|random|constant]
 //                                                 e.g. dmxcli halo 50 3200
 //   dmxcli black  [--port PATH]                  send all zeros
+//   dmxcli monitor [--port PATH] [--seconds S] [--on-change] [--raw] [--demo]
+//                                                 watch the widget's DMX IN port: live level grid
+//                                                 (--raw = one line per message). Receiving is a mode:
+//                                                 the widget stops transmitting until the next output frame.
+//   dmxcli selftest                              check the receive parsers against synthetic frames (no hardware)
+//   dmxcli loopback [--port PATH] [--seconds S] [--channels N]
+//                                                 patch OUT→IN with a 5-pin cable: send a known pattern,
+//                                                 then listen for it (also settles whether the Pro can do both)
 //   dmxcli icon   [--iconset DIR] [--png PATH --size N]
 //                                                 render the app icon (no hardware needed)
 //   dmxcli bench  [--port PATH] [--channels N] [--seconds S] [--fps F]
@@ -27,7 +35,7 @@ func die(_ msg: String) -> Never { FileHandle.standardError.write((msg + "\n").d
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let cmd = args.first else {
-    print("usage: dmxcli list|info|set|halo|black|icon [--port PATH] [--hold SEC] ...")
+    print("usage: dmxcli list|info|set|halo|black|monitor|icon [--port PATH] [--hold SEC] ...")
     exit(2)
 }
 args.removeFirst()
@@ -79,8 +87,8 @@ case "info":
     try? p.write(EnttecPro.getParametersRequest())
     let q = p.read(max: 64, timeout: 0.5)
     print("port:     \(portPath)")
-    if let m = EnttecPro.parseMessage(s), let sn = EnttecPro.parseSerial(m.data) { print("serial:   \(sn)") } else { print("serial:   (no reply) raw=\(hex(s))") }
-    if let m = EnttecPro.parseMessage(q), let prm = EnttecPro.parseParameters(m.data) {
+    if let d = EnttecPro.message(.getWidgetSerial, in: s), let sn = EnttecPro.parseSerial(d) { print("serial:   \(sn)") } else { print("serial:   (no reply) raw=\(hex(s))") }
+    if let d = EnttecPro.message(.getWidgetParameters, in: q), let prm = EnttecPro.parseParameters(d) {
         print("firmware: \(prm.firmwareVersion >> 8).\(prm.firmwareVersion & 0xFF)")
         print(String(format: "break:    %d (%.1f µs)", prm.breakTime, Double(prm.breakTime) * 10.67))
         print(String(format: "MAB:      %d (%.1f µs)", prm.mabTime, Double(prm.mabTime) * 10.67))
@@ -114,6 +122,30 @@ case "halo":
 case "black":
     stream([UInt8](repeating: 0, count: 512), seconds: 1)
 
+case "monitor":
+    var opts = MonitorOptions()
+    if let s = takeOption("--seconds") { opts.seconds = Double(s) }
+    if let m = takeOption("--slots"), let n = Int(m) { opts.maxSlot = min(512, max(8, n)) }
+    if let i = args.firstIndex(of: "--on-change") { opts.mode = .onChange; args.remove(at: i) }
+    if let i = args.firstIndex(of: "--raw") { opts.raw = true; args.remove(at: i) }
+    if let i = args.firstIndex(of: "--demo") { opts.demo = true; args.remove(at: i) }
+    runMonitor(port: opts.demo ? nil : openPort(),
+               portPath: opts.demo ? "(demo — synthetic frames, no hardware)" : portPath,
+               options: opts)
+
+case "selftest":
+    receiveSelfTest()
+
+case "loopback":
+    let secs = Double(takeOption("--seconds") ?? "4") ?? 4
+    let nch = Int(takeOption("--channels") ?? "24") ?? 24
+    if let i = args.firstIndex(of: "--alternate") {
+        args.remove(at: i)
+        runLoopbackAlternating(port: openPort(), portPath: portPath, seconds: secs, channels: nch)
+    } else {
+        runLoopback(port: openPort(), portPath: portPath, seconds: secs, channels: nch)
+    }
+
 case "icon":
     // Render the app icon: --iconset DIR writes an .iconset (feed to iconutil), --png PATH one image.
     if let dir = takeOption("--iconset") {
@@ -138,7 +170,7 @@ case "params":
     usleep(100_000)
     try? p.write(EnttecPro.getParametersRequest())
     let q = p.read(max: 64, timeout: 0.5)
-    if let m = EnttecPro.parseMessage(q), let prm = EnttecPro.parseParameters(m.data) {
+    if let d = EnttecPro.message(.getWidgetParameters, in: q), let prm = EnttecPro.parseParameters(d) {
         print("widget now: break \(prm.breakTime), MAB \(prm.mabTime), refresh \(prm.refreshRate) Hz")
     } else { print("no reply: \(hex(q))") }
     p.close()

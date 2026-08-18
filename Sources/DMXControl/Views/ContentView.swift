@@ -11,7 +11,7 @@ struct ContentView: View {
             HSplitView {
                 ScrollView { HaloPanelView() }
                     .frame(minWidth: 380, idealWidth: 420)
-                ChannelGridView()
+                UniversePane()
                     .frame(minWidth: 360)
                 ScrollView { DebugView() }
                     .frame(minWidth: 420, idealWidth: 480)
@@ -77,5 +77,31 @@ struct ContentView: View {
             }
         }
         .padding(10)
+    }
+}
+
+/// The universe, both directions: the channels we send, and what the widget hears on DMX IN.
+private struct UniversePane: View {
+    @EnvironmentObject var dmx: DMXController
+    @State private var direction = 0
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Picker("", selection: $direction) {
+                Text("Out").tag(0)
+                Text("In").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding([.horizontal, .top], 10)
+
+            if direction == 0 { ChannelGridView() } else { MonitorView() }
+        }
+        .onAppear { if dmx.monitoring { direction = 1 } }
+        .onChange(of: dmx.monitoring) { on in if on { direction = 1 } }
+        .onChange(of: direction) { _ in
+            // Leaving the input tab shouldn't quietly leave the widget deaf-and-mute.
+            if direction == 0 && dmx.monitoring { dmx.monitoring = false }
+        }
     }
 }

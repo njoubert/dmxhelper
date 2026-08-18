@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="DMX Control app: Halo fixture panel, raw channel sliders, and DMX output debug pane" width="900">
+  <img src="docs/screenshot.png" alt="DMX Control app: Halo fixture panel, raw channel sliders with Out/In tabs, and DMX output debug pane" width="900">
 </p>
 
 ```
@@ -23,6 +23,8 @@
 ./build.sh cli set 1=255 2=64 --hold 5
 ./build.sh cli black
 ./build.sh cli bench --channels 24 --fps 750 --seconds 10   # pacing / backpressure test
+./build.sh cli monitor      # watch the widget's DMX IN port (add --demo to see it with no hardware)
+./build.sh cli loopback     # patch OUT→IN and check whether anything comes back
 ```
 
 ## Hardware
@@ -37,11 +39,16 @@
 ## How it works
 
 * `Sources/DMXCore/SerialPort.swift` — bare POSIX serial (open/termios/write). The Pro
-  ignores baud rate (the FTDI talks to the widget's MCU at a fixed rate); we set 115200 anyway.
+  ignores baud rate (the FTDI talks to the widget's MCU at a fixed rate); we open at 3 Mbaud
+  anyway — see the gotcha below, it is not cosmetic.
 * `Sources/DMXCore/EnttecDMXUSBPro.swift` — the widget's message framing:
   `7E <label> <lenLSB> <lenMSB> <data…> E7`. Label 6 = "send DMX packet";
   data = start code `00` + 512 channel bytes (518 bytes on the wire per frame).
   Labels 3/10 read widget parameters / serial number.
+* `Sources/DMXCore/EnttecReceive.swift` — the other direction. Label 8 asks the widget to report
+  what it hears on **DMX IN**; it then pushes label 5 (whole frames) or label 9 (40-slot deltas)
+  until we send a frame again. `MessageStream` reassembles those messages from arbitrary read
+  chunks and resyncs past junk.
 * `Sources/DMXCore/AmaranHalo.swift` — Halo 300x channel maps (see below) → DMX bytes.
 * `Sources/DMXControl/` — SwiftUI app. `DMXController` holds the 512-channel universe and
   streams it to the widget on a background timer. Two modes:
@@ -64,7 +71,10 @@ The app window has three panes:
 
 1. **amaran Halo 300x** — intensity / CCT / ±green / strobe / CCT+ sliders, DMX profile and
    start-address pickers. Shows the exact bytes it writes.
-2. **Channels** — raw sliders for all 512 channels, blackout / full.
+2. **Out / In** — *Out* is raw sliders for all 512 channels, blackout / full. *In* is the DMX
+   input monitor: flip **Listen** and the pane fills with what the widget hears on its IN port —
+   a heat-mapped grid of live slot values, frame rate, slot count, start code and error counters.
+   Turning it on stops transmitting (see below).
 3. **DMX Output Debug** — port, widget info, measured fps, byte counter, the last Enttec
    message as a hex dump (short or full 518 bytes, annotated), the currently non-zero
    channels, and a timestamped change log of every frame that differed from the previous one.
@@ -94,6 +104,44 @@ The x-series is bi-color, so only the CCT profiles apply. Pick the profile on th
 | 5 | CCT+ | 0–127 off · 128–255 on |
 
 DMX-loss behaviour is set on the light (hold / blackout / fade / hold 2 min then fade).
+
+## Reading DMX in
+
+The Pro has a DMX **in** port as well as an out, and the widget will report what it sees there —
+but only when asked, and only instead of transmitting:
+
+* Label 8 (`receiveDMXOnChange`) switches the widget to listening. It then streams label 5
+  messages, one per DMX frame it receives (status byte, start code, then the slots), or label 9
+  change-of-state blocks if you ask for deltas.
+* **Receiving is a mode, not a second channel.** The widget stops driving DMX OUT while it
+  listens and only goes back when it gets the next frame from us. So the app's Listen switch
+  stops the send timer, and a single fixture on OUT holds its last look meanwhile. There is no
+  way to watch a universe and drive one at the same time with one Pro.
+* Nothing arrives at all when the IN port is idle — no signal means silence, not zeros. Feed it
+  from a console, an Art-Net/sACN node, or another widget's OUT.
+* Once listening, the widget is chattering; a reply you asked for is no longer the first thing in
+  the buffer. Parse with `EnttecPro.message(_:in:)`, not by assuming byte 0 starts your message.
+
+```
+dmxcli monitor                 # live grid of the incoming universe
+dmxcli monitor --raw           # one line per message, for protocol work
+dmxcli monitor --demo          # synthetic frames through the same parser — no hardware needed
+dmxcli monitor --on-change     # ask for label 9 deltas instead of whole frames
+dmxcli loopback                # send a known pattern, then listen for it (needs OUT patched to IN)
+dmxcli selftest                # framing/parsing checks against synthetic messages
+```
+
+`loopback` settles what this rig can actually do, and the answer is: **a single Pro cannot hear
+itself.** With a 5-pin cable patched from OUT straight back into IN, nothing comes back — not in
+send-always mode, not in on-change mode, and not across 42 `loopback --alternate` cycles that
+drive the line right up to the moment of switching. Zero bytes, indistinguishable from an
+unpatched port. That matches the API's mode exclusivity, and is what you'd expect if the widget
+muxes one UART between its transmitter and receiver.
+
+So the input monitor here is real code on a real port, but it has never seen a real frame: that
+needs a *second* DMX source — another interface, a console, or an Art-Net/sACN node — feeding
+this widget's IN. `dmxcli monitor --demo` and `dmxcli selftest` exercise everything up to the wire
+in the meantime.
 
 ## Timing & gotchas (measured, see `dmxcli bench|drain|latency`)
 

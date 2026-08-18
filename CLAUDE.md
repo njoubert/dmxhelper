@@ -18,7 +18,8 @@ The Halo's DMX channel maps are in `docs/amaran-dmx-profile-spec-v1.1.pdf` and s
 ```
 ./build.sh                # swift build (debug) → .build/debug/{DMXControl,dmxcli}
 ./build.sh run [flags]    # build + launch the app. Flags: --connect (auto-connect),
-                          #   --high-speed, --demo (preset Halo 60%/4500K), --screenshot PATH (render window to PNG, quit)
+                          #   --high-speed, --demo (preset Halo 60%/4500K), --monitor (listen on DMX IN),
+                          #   --screenshot PATH (render window to PNG, quit)
 ./build.sh cli <args>     # build + run dmxcli
 ./build.sh app            # release build → dist/DMXControl.app (ad-hoc signed, icon baked in) and open it
 ./build.sh icon           # re-render docs/icon.png
@@ -26,7 +27,8 @@ The Halo's DMX channel maps are in `docs/amaran-dmx-profile-spec-v1.1.pdf` and s
 swift build --product dmxcli        # rebuild just the CLI
 ```
 
-There is no test target. Hardware smoke tests are the CLI:
+There is no test target. Checks live in the CLI — `dmxcli selftest` covers the receive parsers
+with no hardware; everything else is a hardware smoke test:
 
 ```
 dmxcli list | info                          # ports / widget serial, firmware, break/MAB/refresh
@@ -35,6 +37,9 @@ dmxcli set 1=255 2=64 --hold 5 | black       # raw channels
 dmxcli params --rate 0|40                    # widget refresh (0 = as fast as possible) — persists in the widget!
 dmxcli bench --channels 24 --fps 750 --seconds 10   # paced stream; TIOCOUTQ + write() blocking = backpressure
 dmxcli drain / latency                        # burst-then-close timing / burst-then-get-params round trip
+dmxcli monitor [--raw|--demo|--on-change]     # watch DMX IN (--demo = synthetic frames, no hardware)
+dmxcli loopback                               # OUT→IN cable: send a known pattern, listen for it
+dmxcli selftest                               # receive framing/parsing checks, no hardware
 ```
 
 Only one process can hold the port (`TIOCEXCL`): stop the app before running `dmxcli`, and vice
@@ -57,6 +62,11 @@ then `sips -Z 1400 docs/screenshot.png`.
   185.4 radius grid). One source for two consumers: the app sets it as the live dock icon at launch
   (a bare SwiftPM executable has no bundle to carry one), and `dmxcli icon --iconset` feeds
   `iconutil` in `build.sh app`. Change the drawing, then `./build.sh icon` to refresh the README copy.
+- `EnttecReceive` — the input side: label 8 (ask to receive), label 5 (whole frames), label 9
+  (40-slot deltas), plus `MessageStream`, an incremental framer that reassembles messages from
+  arbitrary read chunks and resyncs past junk. Receiving is a **mode**: the widget stops driving
+  DMX OUT until we send the next frame, and while listening it chatters, so replies must be
+  found with `EnttecPro.message(_:in:)` rather than assuming byte 0.
 - `AmaranHalo` — `HaloProfile` (Profile 1 = 3ch CCT Universal, Profile 2 = 5ch CCT) and `HaloState`
   (intensity %, CCT K, ±green, strobe, CCT+) → `encode(profile:)` bytes.
 
@@ -75,6 +85,11 @@ then `sips -Z 1400 docs/screenshot.png`.
   - `shutdownSync()` is called from `AppDelegate.applicationShouldTerminate` (also on
     SIGINT/SIGTERM/SIGHUP): stop timer → restore params → flush + close, synchronously on `ioQueue`,
     so the port is free before the process exits.
+  - `monitoring` switches to input: stops the send timer, writes label 8, and reads via a
+    `DispatchSourceRead` on `ioQueue` (cancelled *before* the port closes — it holds the fd),
+    with a separate 10 Hz timer pushing `input` to the UI so signal loss shows up even when
+    nothing arrives. Toggling it off restarts streaming; the first frame sent is what puts the
+    widget back into output mode.
 - Views: `HaloPanelView` holds its own `HaloState` and pushes encoded bytes into the universe at its
   start address on every change (one-way; the raw grid doesn't feed back). `ChannelGridView` edits
   channels directly. `DebugView` shows the last wire packet (hex), mode/frame/pacing, and a change log.
@@ -97,5 +112,14 @@ opens the port itself. Add new experiments here first; they're cheap and don't n
 - Label 4 (set params) is **persistent** in the widget across power cycles — always restore.
   Label 10 (get serial) switches the widget's port to input and stops DMX output until the next
   label 6; label 3 (get params) does not.
+- **Input and output are exclusive on the Pro.** Label 8 puts it in receive mode and it stays
+  there until the next label 6, so you cannot monitor a universe and drive one at once. An idle
+  IN port produces *silence*, not zero frames — "nothing received" does not mean "receive is
+  broken".
+- **A single widget cannot loopback to itself** (measured, FW 1.44, OUT patched to IN with a
+  5-pin cable): zero bytes came back in send-always mode, in on-change mode, and across 42
+  `loopback --alternate` cycles that drove the line right up to each listen window. So the
+  receive path here can only ever be exercised by a *second* DMX source. Still untested for
+  want of one: real label 5 reception, and the label 9 delta packing (packed vs positional).
 - The Halo applies a fixed-duration crossfade to intensity/CCT changes in firmware (strobe channel is
   instant). Fades you see are not from this code; there's no fixture setting for it.
