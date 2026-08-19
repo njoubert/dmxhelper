@@ -98,8 +98,8 @@ private struct UniversePane: View {
             if direction == 0 { ChannelGridView() } else { MonitorView() }
         }
         .onAppear { if dmx.monitoring { direction = 1 } }
-        .onChange(of: dmx.monitoring) { on in if on { direction = 1 } }
-        .onChange(of: direction) { _ in
+        .onChange(of: dmx.monitoring) { _, on in if on { direction = 1 } }
+        .onChange(of: direction) {
             // Leaving the input tab shouldn't quietly leave the widget deaf-and-mute.
             if direction == 0 && dmx.monitoring { dmx.monitoring = false }
         }
