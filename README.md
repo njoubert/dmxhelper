@@ -18,6 +18,7 @@
 ./build.sh run --connect --high-speed   # …and connect immediately in high-speed mode
 ./build.sh run --connect --demo --screenshot docs/screenshot.png   # render the window to a PNG and quit
 ./build.sh app              # release build → dist/DMXControl.app and open it
+./build.sh install          # …and install it to /Applications
 ./build.sh cli info         # query the widget (serial, firmware, break/MAB/refresh)
 ./build.sh cli halo 50 3200 # Halo @ addr 1: 50% intensity, 3200K, hold 2s
 ./build.sh cli set 1=255 2=64 --hold 5

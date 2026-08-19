@@ -22,6 +22,7 @@ The Halo's DMX channel maps are in `docs/amaran-dmx-profile-spec-v1.1.pdf` and s
                           #   --screenshot PATH (render window to PNG, quit)
 ./build.sh cli <args>     # build + run dmxcli
 ./build.sh app            # release build → dist/DMXControl.app (ad-hoc signed, icon baked in) and open it
+./build.sh install        # same bundle, installed to /Applications (quits a running copy first)
 ./build.sh icon           # re-render docs/icon.png
 ./build.sh clean          # rm -rf .build dist
 swift build --product dmxcli        # rebuild just the CLI
