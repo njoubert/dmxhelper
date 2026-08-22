@@ -203,3 +203,12 @@ button labels — matching `"Don't"` against a curly `Don’t` silently fails.
   want of one: real label 5 reception, and the label 9 delta packing (packed vs positional).
 - The Halo applies a fixed-duration crossfade to intensity/CCT changes in firmware (strobe channel is
   instant). Fades you see are not from this code; there's no fixture setting for it.
+
+## Traps already found (don't re-learn these)
+
+- **Shadow offset and blur are in base space.** `CGContext.setShadow` ignores the CTM, so a
+  blur sized for the 1024-pt reference canvas is that many *device pixels* at every render
+  size — at the 128-pt icon the body shadow ran off the bottom edge and was clipped to a hard
+  line (visible in the DMG window and Finder). Every `setShadow` in `AppIcon` multiplies by
+  the render scale (size / 1024). After touching the icon, check the edge alpha is 0 at
+  256 px as well as 1024 px by reading back the bitmap's outermost rows and columns.

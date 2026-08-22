@@ -26,9 +26,12 @@ public enum AppIcon {
         let body = CGRect(x: bodyInset, y: bodyInset, width: ref - 2 * bodyInset, height: ref - 2 * bodyInset)
         let shape = CGPath(roundedRect: body, cornerWidth: bodyRadius, cornerHeight: bodyRadius, transform: nil)
 
-        // Drop shadow (baked in, the way macOS icons carry their own).
+        // Drop shadow (baked in, the way macOS icons carry their own). Shadow offset and
+        // blur are in base space — the CTM does not scale them — so they are scaled by hand,
+        // or the shadow meant for the 1024 canvas is 44 device pixels at every size and gets
+        // clipped to a hard line at the bottom of the 128-pt icon.
         ctx.saveGState()
-        ctx.setShadow(offset: CGSize(width: 0, height: -18), blur: 44,
+        ctx.setShadow(offset: CGSize(width: 0, height: -18 * s), blur: 44 * s,
                       color: NSColor(calibratedWhite: 0, alpha: 0.42).cgColor)
         ctx.addPath(shape); ctx.setFillColor(NSColor.black.cgColor); ctx.fillPath()
         ctx.restoreGState()
