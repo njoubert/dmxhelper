@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Niels Joubert
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import DMXCore
 
@@ -35,7 +37,7 @@ func die(_ msg: String) -> Never { FileHandle.standardError.write((msg + "\n").d
 
 var args = Array(CommandLine.arguments.dropFirst())
 guard let cmd = args.first else {
-    print("usage: dmxcli list|info|set|halo|black|monitor|icon [--port PATH] [--hold SEC] ...")
+    print("usage: dmxcli list|info|set|halo|black|monitor|icon|dmg-background|version [--port PATH] [--hold SEC] ...")
     exit(2)
 }
 args.removeFirst()
@@ -145,6 +147,16 @@ case "loopback":
     } else {
         runLoopback(port: openPort(), portPath: portPath, seconds: secs, channels: nch)
     }
+
+case "version":
+    print(AppVersion.full)
+
+case "dmg-background":
+    // Render the disk image's background (1× and 2× PNGs) into a directory; build.sh packs
+    // them into one TIFF. --signed drops the "unsigned build" footer.
+    guard let dir = takeOption("--dir") else { die("dmg-background needs --dir DIR") }
+    try DMGBackground.write(to: dir, signed: args.contains("--signed"))
+    print("wrote \(dir)")
 
 case "icon":
     // Render the app icon: --iconset DIR writes an .iconset (feed to iconutil), --png PATH one image.

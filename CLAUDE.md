@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS toy for driving DMX lights through an **Enttec DMX USB Pro**: a SwiftUI app (`DMXControl`),
-a scripting CLI (`dmxcli`), and a shared library (`DMXCore`). Pure SwiftPM, no Xcode project,
+A macOS app for driving DMX lights through an **Enttec DMX USB Pro**: a SwiftUI app
+(**Nimbus DMX Helper**, target/executable `NimbusDMXHelper`), a scripting CLI (`dmxcli`),
+and a shared library (`DMXCore`). Pure SwiftPM, no Xcode project,
 Command Line Tools are enough (macOS 14+, Swift 5.10+, Swift 5 language mode).
 
 Hardware on this machine (not derivable from code): the widget enumerates as
@@ -21,12 +22,27 @@ The Halo's DMX channel maps are in `docs/amaran-dmx-profile-spec-v1.1.pdf` and s
                           #   --high-speed, --demo (preset Halo 60%/4500K), --monitor (listen on DMX IN),
                           #   --screenshot PATH (render window to PNG, quit)
 ./build.sh cli <args>     # build + run dmxcli
-./build.sh app            # release build → dist/DMXControl.app (ad-hoc signed, icon baked in) and open it
+./build.sh app            # release build → "dist/Nimbus DMX Helper.app" (icon baked in) and open it
+./build.sh dmg            # …packed as dist/NimbusDMXHelper-<VERSION>.dmg (drag-to-Applications)
 ./build.sh install        # same bundle, installed to /Applications (quits a running copy first)
+./build.sh uninstall      # quit and remove /Applications/Nimbus DMX Helper.app
+./build.sh status         # running? installed? how is it signed?
 ./build.sh icon           # re-render docs/icon.png
 ./build.sh clean          # rm -rf .build dist
 swift build --product dmxcli        # rebuild just the CLI
+dmxcli version                      # what build is this ("dev build" outside an .app)
 ```
+
+Naming, all set at the top of `build.sh`: `NAME=NimbusDMXHelper` is the executable/target and
+process name (what `pgrep`/`pkill` match), `APP_NAME="Nimbus DMX Helper"` is what the user sees
+(the `.app`, the disk image volume), `BUNDLE_ID=com.njoubert.nimbusdmxhelper`. Keep those
+distinct — paths with spaces need quoting everywhere, and `pkill -x "Nimbus DMX Helper"` would
+never match.
+
+**House rules:** `prek run --all-files` must pass before claiming done (shellcheck runs at its
+default severity, so `A && B || true` is flagged — write an `if`). Every new Swift file starts
+with `// Copyright (C) 2026 Niels Joubert` and `// SPDX-License-Identifier: GPL-3.0-or-later`;
+the project is GPL-3.0-or-later, so don't vendor code under an incompatible licence.
 
 There is no test target. Checks live in the CLI — `dmxcli selftest` covers the receive parsers
 with no hardware; everything else is a hardware smoke test:
@@ -71,7 +87,7 @@ then `sips -Z 1400 docs/screenshot.png`.
 - `AmaranHalo` — `HaloProfile` (Profile 1 = 3ch CCT Universal, Profile 2 = 5ch CCT) and `HaloState`
   (intensity %, CCT K, ±green, strobe, CCT+) → `encode(profile:)` bytes.
 
-**`Sources/DMXControl`** (SwiftUI app)
+**`Sources/NimbusDMXHelper`** (SwiftUI app)
 - `DMXController` (`@MainActor ObservableObject`, singleton `.shared`) is the heart. It owns the
   512-byte universe (`channels`, published, main-actor) and a lock-guarded copy (`frame`) that a
   `DispatchSourceTimer` on `ioQueue` snapshots and writes to the widget every tick. Convention:
@@ -94,11 +110,72 @@ then `sips -Z 1400 docs/screenshot.png`.
 - Views: `HaloPanelView` holds its own `HaloState` and pushes encoded bytes into the universe at its
   start address on every change (one-way; the raw grid doesn't feed back). `ChannelGridView` edits
   channels directly. `DebugView` shows the last wire packet (hex), mode/frame/pacing, and a change log.
-- `DMXControlApp`/`AppDelegate`: because this runs as a bare SwiftPM executable (no bundle), the
+- `NimbusDMXHelperApp`/`AppDelegate`: because this runs as a bare SwiftPM executable (no bundle), the
   delegate sets `NSApp.setActivationPolicy(.regular)` and activates; it also parses the launch flags.
 
 **`Sources/dmxcli/main.swift`** — flat command switch over the same DMXCore APIs; every command
 opens the port itself. Add new experiments here first; they're cheap and don't need the GUI.
+
+## Release and distribution
+
+The deliverable is the disk image. A release is:
+
+1. **Version.** `VERSION=` near the top of `build.sh` is the marketing version
+   (`CFBundleShortVersionString`, the DMG's file name). `CFBundleVersion` is
+   `git rev-list --count HEAD`, so it increments by itself — commit before building. It
+   cannot be a git hash: macOS requires one to three period-separated integers and *orders*
+   versions by it (LaunchServices uses that ordering to decide which copy is newer). The app
+   shows both in the connection bar and `dmxcli version` prints them (`AppVersion` in DMXCore).
+2. **Docs.** `./build.sh icon` refreshes `docs/icon.png`; regenerate the screenshot with
+   `./build.sh run --connect --demo --screenshot docs/screenshot.png` then `sips -Z 1400`.
+3. **Build.** `./build.sh dmg` → signs, notarizes the app *and* the image, staples both.
+   Notarization waits on Apple (minutes, occasionally longer); on failure read the reason with
+   `xcrun notarytool log <submission id> --keychain-profile "$NOTARY_PROFILE"`. Then `open` the
+   DMG and look at it: 640-wide window, no blank strip on the right, nothing selected.
+4. **Install what you just built** by mounting the DMG and `ditto`-ing the app out of it to
+   `/Applications`, *not* `./build.sh install` — install re-signs the bundle, which invalidates
+   the staple and costs another full notarization round, and the DMG copy is the exact artifact
+   users get. Quit the running copy first (it holds the serial port).
+5. **Tag and publish:**
+   ```
+   git tag -a v<VERSION> -m "Nimbus DMX Helper <VERSION>"
+   git push origin main --tags
+   gh release create v<VERSION> "dist/NimbusDMXHelper-<VERSION>.dmg" \
+     --title "Nimbus DMX Helper <VERSION>" --notes-file <notes> --latest
+   ```
+   Don't commit `dist/`.
+
+**Signing** is configured in a git-ignored `.signing` file (`SIGN_IDENTITY`, `NOTARY_PROFILE`);
+unset, everything falls back to ad-hoc and the DMG background grows an "unsigned build" footer
+(`dmxcli dmg-background --signed` drops it). Keep that unsigned path working — it is what any
+machine without the certificate uses. The Developer ID private key lives only in the login
+keychain and is not re-downloadable; the membership is annual, and if it lapses,
+already-notarized releases keep working forever while new builds fall back to ad-hoc.
+This app needs **no entitlements**: `/dev/cu.*` is reachable under the hardened runtime
+(it would need `com.apple.security.device.serial` only inside the App Sandbox, which would
+also be required for the Mac App Store — where GPL-3.0 cannot go anyway).
+
+**DMG layout** is Finder's `.DS_Store`, written by the AppleScript in `build.sh`; geometry is
+shared with `DMGBackground.swift` (640×440, icon centres 170/210 and 470/210) so change both.
+Two traps: window `bounds` include the 28 pt title bar, and Finder adds the *hidden* sidebar's
+remembered width back on reopen unless `sidebar width` is set to 0 and the bounds re-applied
+after the close/open cycle — that is what leaves a blank strip down the right-hand side.
+`set selection to {}` is not valid inside `tell disk`. The first run prompts for permission to
+control Finder.
+
+## Inspecting the running app
+
+`--screenshot PATH` renders the window offscreen and quits — the cheap check. To drive the real
+UI instead, use the accessibility API (needs Accessibility permission for whatever runs it):
+
+```
+osascript -e 'tell application "System Events" to tell process "NimbusDMXHelper"
+  get entire contents of window 1        -- then match on role: AXButton, AXCheckBox, …
+end tell'
+```
+
+Read a value with `value of`, press something with `click`. Watch for smart punctuation in
+button labels — matching `"Don't"` against a curly `Don’t` silently fails.
 
 ## Hard-won gotchas (all measured — see README "Timing & gotchas")
 

@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "DMXControl",
+    name: "NimbusDMXHelper",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "DMXCore", targets: ["DMXCore"]),
-        .executable(name: "DMXControl", targets: ["DMXControl"]),
+        .executable(name: "NimbusDMXHelper", targets: ["NimbusDMXHelper"]),
         .executable(name: "dmxcli", targets: ["dmxcli"]),
     ],
     targets: [
@@ -14,7 +14,7 @@ let package = Package(
         .target(name: "DMXCore"),
         // SwiftUI app.
         .executableTarget(
-            name: "DMXControl",
+            name: "NimbusDMXHelper",
             dependencies: ["DMXCore"],
             swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         ),

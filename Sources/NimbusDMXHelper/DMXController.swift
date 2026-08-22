@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Niels Joubert
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import DMXCore
 import Combine
@@ -219,7 +221,7 @@ final class DMXController: ObservableObject {
         }
         isConnected = false
         if p != nil {
-            FileHandle.standardError.write("DMXControl: port closed in \(Int(Date().timeIntervalSince(t0) * 1000)) ms\n".data(using: .utf8)!)
+            FileHandle.standardError.write("NimbusDMXHelper: port closed in \(Int(Date().timeIntervalSince(t0) * 1000)) ms\n".data(using: .utf8)!)
         }
     }
 

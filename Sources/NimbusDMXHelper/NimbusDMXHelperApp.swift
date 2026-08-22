@@ -1,14 +1,16 @@
+// Copyright (C) 2026 Niels Joubert
+// SPDX-License-Identifier: GPL-3.0-or-later
 import SwiftUI
 import AppKit
 import DMXCore
 
 @main
-struct DMXControlApp: App {
+struct NimbusDMXHelperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @ObservedObject private var dmx = DMXController.shared
 
     var body: some Scene {
-        WindowGroup("DMX Control") {
+        WindowGroup("Nimbus DMX Helper") {
             ContentView()
                 .environmentObject(dmx)
         }

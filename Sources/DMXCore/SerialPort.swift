@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Niels Joubert
+// SPDX-License-Identifier: GPL-3.0-or-later
 import Foundation
 import Darwin
 

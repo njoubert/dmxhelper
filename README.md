@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/icon.png" alt="dmxhelper icon" width="128">
+  <img src="docs/icon.png" alt="Nimbus DMX Helper icon" width="128">
 </p>
 
-<h1 align="center">dmxhelper</h1>
+<h1 align="center">Nimbus DMX Helper</h1>
 
 <p align="center">
   A toy DMX controller for macOS — a native Swift/SwiftUI app plus a CLI, driving lights through an
@@ -10,15 +10,17 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" alt="DMX Control app: Halo fixture panel, raw channel sliders with Out/In tabs, and DMX output debug pane" width="900">
+  <img src="docs/screenshot.png" alt="Nimbus DMX Helper: Halo fixture panel, raw channel sliders with Out/In tabs, and DMX output debug pane" width="900">
 </p>
 
 ```
 ./build.sh run              # build + launch the SwiftUI app
 ./build.sh run --connect --high-speed   # …and connect immediately in high-speed mode
 ./build.sh run --connect --demo --screenshot docs/screenshot.png   # render the window to a PNG and quit
-./build.sh app              # release build → dist/DMXControl.app and open it
-./build.sh install          # …and install it to /Applications
+./build.sh app              # release build → "dist/Nimbus DMX Helper.app" and open it
+./build.sh dmg              # …packed as a drag-to-Applications disk image
+./build.sh install          # …installed to /Applications
+./build.sh status           # running? installed? how is it signed?
 ./build.sh cli info         # query the widget (serial, firmware, break/MAB/refresh)
 ./build.sh cli halo 50 3200 # Halo @ addr 1: 50% intensity, 3200K, hold 2s
 ./build.sh cli set 1=255 2=64 --hold 5
@@ -51,7 +53,7 @@
   until we send a frame again. `MessageStream` reassembles those messages from arbitrary read
   chunks and resyncs past junk.
 * `Sources/DMXCore/AmaranHalo.swift` — Halo 300x channel maps (see below) → DMX bytes.
-* `Sources/DMXControl/` — SwiftUI app. `DMXController` holds the 512-channel universe and
+* `Sources/NimbusDMXHelper/` — SwiftUI app. `DMXController` holds the 512-channel universe and
   streams it to the widget on a background timer. Two modes:
   * **Normal** — full 512-channel frames at 40 fps (= the widget's own DMX refresh rate;
     a full frame is ~22.7 ms on the wire, so ~44 Hz is the physical ceiling). The widget
@@ -166,3 +168,25 @@ in the meantime.
 ## Requirements
 
 macOS 14+, Swift 5.10+ toolchain (Command Line Tools are enough — no Xcode project needed).
+
+## Installing a release
+
+`./build.sh dmg` builds the disk image people actually install from: the app, an Applications
+folder to drag it onto, and a background explaining what it needs.
+
+Without a Developer ID the build is ad-hoc signed and not notarized, so a copy that arrives
+with a quarantine flag (browser download, AirDrop) is refused at first open and has to be
+allowed in System Settings › Privacy & Security ("Open Anyway"). With one, put it in a
+git-ignored `.signing` file next to `build.sh` and `app`/`dmg`/`install` sign with it
+(hardened runtime, timestamped), notarize the app and the disk image, and staple both:
+
+```
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+NOTARY_PROFILE=NimbusDMXHelper   # from: xcrun notarytool store-credentials NimbusDMXHelper --apple-id … --team-id … --password …
+```
+
+## License
+
+Nimbus DMX Helper is free software under the [GNU General Public License, version 3 or
+later](LICENSE). Use it, change it, ship it, sell it — but anything built from it has to be
+released under the same terms, with source.

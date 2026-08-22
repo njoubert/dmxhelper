@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Niels Joubert
+// SPDX-License-Identifier: GPL-3.0-or-later
 import SwiftUI
 import DMXCore
 
@@ -75,6 +77,11 @@ struct ContentView: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+            Text(AppVersion.versionString)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+                .help("Version and build number — quote these in a bug report. \"dev build\" means it is running outside an .app bundle.")
         }
         .padding(10)
     }
