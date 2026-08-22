@@ -145,7 +145,9 @@ The deliverable is the disk image. A release is:
    ```
    Don't commit `dist/`.
 
-**Signing** is configured in a git-ignored `.signing` file (`SIGN_IDENTITY`, `NOTARY_PROFILE`);
+**Signing** is configured in a git-ignored `.signing` file (`SIGN_IDENTITY`, `NOTARY_PROFILE`
+— the notary credentials are per Apple ID + team, not per app, so one profile serves every
+project; don't name it after this one);
 unset, everything falls back to ad-hoc and the DMG background grows an "unsigned build" footer
 (`dmxcli dmg-background --signed` drops it). Keep that unsigned path working — it is what any
 machine without the certificate uses. The Developer ID private key lives only in the login

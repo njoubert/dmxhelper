@@ -182,7 +182,8 @@ git-ignored `.signing` file next to `build.sh` and `app`/`dmg`/`install` sign wi
 
 ```
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-NOTARY_PROFILE=NimbusDMXHelper   # from: xcrun notarytool store-credentials NimbusDMXHelper --apple-id … --team-id … --password …
+NOTARY_PROFILE=<profile>   # from: xcrun notarytool store-credentials <profile> --apple-id … --team-id … --password …
+                           # notary credentials are per Apple ID + team, not per app — one profile serves every project
 ```
 
 ## License

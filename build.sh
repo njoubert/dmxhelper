@@ -19,7 +19,8 @@
 # disk image is notarized and stapled. Configure it in a git-ignored ./.signing file (or the
 # environment):
 #   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-#   NOTARY_PROFILE=NimbusDMXHelper   # xcrun notarytool store-credentials NimbusDMXHelper ...
+#   NOTARY_PROFILE=<profile>         # the name given to: xcrun notarytool store-credentials <profile> …
+#                                  (credentials are per Apple ID + team, so one profile serves every project)
 # Debug builds (run / cli) stay ad-hoc.
 set -euo pipefail
 cd "$(dirname "$0")"
